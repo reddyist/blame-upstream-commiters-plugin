@@ -22,6 +22,18 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.tools.ant.types.selectors.SelectorUtils;
 import org.kohsuke.stapler.DataBoundConstructor;
 
+import hudson.model.CauseAction;
+import java.util.HashSet;
+import hudson.model.Cause;
+import hudson.model.Cause.UpstreamCause;
+import hudson.model.Action;
+import hudson.model.Hudson;
+import jenkins.model.Jenkins;
+import hudson.model.FreeStyleProject;
+import hudson.model.FreeStyleBuild;
+
+
+
 @SuppressWarnings({ "unchecked" })
 public class BlameUpstreamCommitersPublisher extends Notifier {
 	//public static final DescriptorImpl DESCRIPTOR = new DescriptorImpl();
@@ -47,7 +59,6 @@ public class BlameUpstreamCommitersPublisher extends Notifier {
     public boolean perform(AbstractBuild<?,?> build, Launcher launcher, BuildListener listener) throws InterruptedException {
 		if (build.getResult() != Result.SUCCESS)
 		{
-//			ArrayList<String> recipientUpstreamProjects=this.getUpstreamRecipients(build);
 			Set<AbstractProject> upstreamProjects = getUpstreamProjects(build);
 			if (!upstreamProjects.isEmpty()) {
                 
@@ -88,9 +99,60 @@ public class BlameUpstreamCommitersPublisher extends Notifier {
 		return true;
 	}
 
-    private Set<AbstractProject> getUpstreamProjects(AbstractBuild<?, ?> build) {
-        return build.getUpstreamBuilds().keySet();
+    private void getUpstreamProjectRecursive(UpstreamCause cause, ArrayList upstreamset) {
+        upstreamset.add(cause.getUpstreamProject());
+        
+        String uprojectname = cause.getUpstreamProject();
+        int bnum = cause.getUpstreamBuild();
+        Jenkins instance = Hudson.getInstance();
+        FreeStyleProject uproject = (FreeStyleProject) instance.getItem(uprojectname);
+        FreeStyleBuild ubuild = (FreeStyleBuild) uproject.getBuildByNumber(bnum);
+        
+        CauseAction uaction = null;
+        Object element = null;
+        Iterator<Action> actions = ubuild.getActions().iterator();
+        while (actions.hasNext()) {
+            element = actions.next();
+            if (element.toString().contains("CauseAction")) {
+                uaction = (CauseAction) element;
+                break;
+            }
+        }
+        
+        if (uaction != null) {
+            Iterator<Cause> ucauses = uaction.getCauses().iterator();
+            while (ucauses.hasNext()) {
+                element = ucauses.next();
+                if (element.getClass().getName().contains("UpstreamCause")) {
+                    getUpstreamProjectRecursive((UpstreamCause) element, upstreamset);
+                }
+            }        
+        }
     }
+    
+    private Set<AbstractProject> getUpstreamProjects(AbstractBuild<?, ?> build) {
+        //return build.getUpstreamBuilds().keySet();
+        CauseAction cause = null;
+        List<Action> actions = build.getActions();
+        for (int i=0; i<actions.size(); i++) {
+            if (actions.get(i).toString().contains("CauseAction")) {
+                cause = (CauseAction) actions.get(i);
+                break;
+            }
+        }
+        ArrayList<String> upstreamset = new ArrayList<String>();
+        for (int i=0; i<cause.getCauses().size(); i++ ) {
+            if (cause.getCauses().get(i).getClass().getName().contains("UpstreamCause")) {
+                getUpstreamProjectRecursive((UpstreamCause) cause.getCauses().get(i), upstreamset);
+            }
+        }
+        HashSet uprojects = new HashSet();
+        for (int p=0; p<upstreamset.size(); p++) {
+            Jenkins instance = Hudson.getInstance();
+            uprojects.add(instance.getItem(upstreamset.get(p)));
+        }
+        return uprojects;
+}
 
     @Extension
     public static final class DescriptorImpl extends BuildStepDescriptor<Publisher> {
